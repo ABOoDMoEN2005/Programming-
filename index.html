@@ -123,7 +123,7 @@ input,select,textarea{font:inherit;padding:10px;border-radius:10px;border:1px so
       <label>بداية العقد<input name="start" type="date"></label>
       <label>نهاية العقد<input name="end" type="date" required></label>
     </div>
-    <label>موعد الدفعة القادمة<input name="due" type="date" required></label>
+    <label>موعد استحقاق الدفعة (إذا لسا ما دفعها، اكتب تاريخها أو اليوم)<input name="due" type="date" required></label>
     <div class="two"><label>الزيادة السنوية<select name="incType"><option value="">بدون زيادة</option><option value="pct">نسبة %</option><option value="amt">مبلغ ثابت</option></select></label><label>قيمة الزيادة<input name="incVal" type="number" min="0" step="any"></label></div>
     <label>تاريخ أول زيادة (إذا تركته فاضي: بعد سنة من بداية العقد)<input name="incDate" type="date"></label>
     <div class="two"><label>غرامة التأخير<select name="lfType"><option value="">بدون</option><option value="day">مبلغ عن كل يوم تأخير</option><option value="pct">نسبة % من الدفعة (مرة وحدة)</option></select></label><label>قيمة الغرامة<input name="lfVal" type="number" min="0" step="any"></label></div>
@@ -224,7 +224,7 @@ function status(t){
   if(c.cycles>0&&c.dueIn<0)return{k:'late',txt:'متأخر '+(-c.dueIn)+' يوم',c:c};
   if(c.dueIn===0)return{k:'soon',txt:'الدفع اليوم',c:c};
   if(c.dueIn>0&&c.dueIn<=REMIND)return{k:'soon',txt:'الدفع بعد '+c.dueIn+' يوم',c:c};
-  return{k:'ok',txt:'منتظم',c:c};
+  return{k:'ok',txt:'الدفعة بعد '+c.dueIn+' يوم',c:c};
 }
 function contractTxt(c){
   if(c.cEnd<0)return'منتهي منذ '+(-c.cEnd)+' يوم';
@@ -243,9 +243,9 @@ function calLink(t){
   var d=t.due.replace(/-/g,''),e=iso(new Date(parse(t.due).getTime()+864e5)).replace(/-/g,'');
   return 'https://calendar.google.com/calendar/render?action=TEMPLATE&text='+encodeURIComponent('دفعة إيجار: '+t.name+' ('+t.unit+')')+'&dates='+d+'/'+e+'&details='+encodeURIComponent('المبلغ: '+money(curRent(t))+' '+t.cur)+'&recur='+encodeURIComponent('RRULE:FREQ=MONTHLY;INTERVAL='+(+t.cycle));
 }
-var payId=null,pf=document.getElementById('pf'),pd=document.getElementById('pdlg');
+var payId=null,payIdx=null,keepNo=0,pf=document.getElementById('pf'),pd=document.getElementById('pdlg');
 function openPay(t){
-  payId=t.id;var c=calc(t);pf.reset();
+  payId=t.id;payIdx=null;keepNo=0;var c=calc(t);pf.reset();pf.elements.amount.readOnly=false;
   document.getElementById('pt').textContent='تسجيل دفعة: '+t.name;
   pf.elements.amount.value=c.cycles>0?c.owed:curRent(t);
   pf.elements.date.value=iso(today());
@@ -256,12 +256,19 @@ pf.addEventListener('submit',function(e){
   e.preventDefault();
   var t=T.filter(function(x){return x.id===payId})[0];if(!t)return;
   var a=parseFloat(pf.elements.amount.value)||0;if(a<=0)return;
+  if(payIdx!==null){var p0=t.log[payIdx];
+    if(p0){
+      if(payIdx===t.log.length-1&&p0.sn){t.due=p0.sn.due;t.credit=p0.sn.credit;t.log.pop();keepNo=p0.no||0}
+      else{p0.date=pf.elements.date.value;p0.method=pf.elements.method.value;p0.note=pf.elements.note.value.trim();payIdx=null;save();pd.close();render();return}
+    }
+    payIdx=null;
+  }
   t.log=t.log||[];t.log.push({date:pf.elements.date.value,amount:a,method:pf.elements.method.value,note:pf.elements.note.value.trim()});
-  t.credit=(t.credit||0)+a;
+  var sn={due:t.due,credit:t.credit||0};t.credit=(t.credit||0)+a;
   var rr_,pdt=parse(pf.elements.date.value),wv=pf.elements.waive.checked,fp=0,fe_;
   while((rr_=curRent(t))>0){fe_=wv?0:feeFor(t,t.due,pdt);if(t.credit<rr_+fe_)break;t.credit-=rr_+fe_;fp+=fe_;t.due=addM(t.due,+t.cycle)}
   t.credit=Math.round(t.credit*100)/100;
-  var last=t.log[t.log.length-1];last.rem=calc(t).owed;if(fp>0)last.fee=Math.round(fp*100)/100;
+  var last=t.log[t.log.length-1];last.rem=calc(t).owed;if(fp>0)last.fee=Math.round(fp*100)/100;last.sn=sn;if(keepNo){last.no=keepNo;keepNo=0}
   save();pd.close();render();openReceipt(t,t.log.length-1);
 });
 document.getElementById('pcancel').onclick=function(){pd.close()};
@@ -598,6 +605,25 @@ document.addEventListener('visibilitychange',function(){
   if(document.hidden||!DB||!UID||pushing||pushT)return;
   DB.collection('data/users/'+UID).doc('meta').get().then(function(s){if(s.exists&&(+s.data().u||0)>lmGet())syncDown()}).catch(function(){});
 });
+function openPayEdit(t,i){
+  var p=t.log[i];if(!p)return;
+  payId=t.id;payIdx=i;keepNo=0;pf.reset();
+  var canAmt=(i===t.log.length-1&&!!p.sn);
+  document.getElementById('pt').textContent='تعديل دفعة: '+t.name;
+  document.getElementById('phint').textContent=canAmt?'تعديل المبلغ بيعيد حساب موعد الدفعة القادمة والرصيد.':'المبلغ ما بتتعدل لأنها مش آخر دفعة (أو دفعة قديمة). بتقدر تعدّل التاريخ والطريقة والملاحظة، أو احذف الدفعات الأحدث أولًا.';
+  pf.elements.amount.value=p.amount;pf.elements.amount.readOnly=!canAmt;
+  pf.elements.date.value=p.date;pf.elements.method.value=p.method||'نقدًا';pf.elements.note.value=p.note||'';
+  document.getElementById('pwv').style.display='none';
+  pd.showModal();
+}
+function delPay(t,i){
+  var p=t.log[i];if(!p)return;
+  var last=(i===t.log.length-1&&!!p.sn);
+  ask(last?'حذف هذه الدفعة وإرجاع موعد الدفعة القادمة والرصيد لما كانوا قبلها؟':'حذف سجل هذه الدفعة فقط؟ موعد الدفعة القادمة ما رح يتغير، وبتقدر تعدّله من زر «تعديل».',function(){
+    if(last){t.due=p.sn.due;t.credit=p.sn.credit}
+    t.log.splice(i,1);save();render();
+  });
+}
 var Q='',FL='all',FP='';
 function matchF(x){
   var t=x.t,q=Q.trim().toLowerCase();
@@ -747,7 +773,7 @@ function render(){
       (t.notes?'<div><span>ملاحظات</span><span>'+esc(t.notes)+'</span></div>':'')+
     '</div>'+
     '<div class="acts"><button class="pri" data-a="pay" data-id="'+t.id+'">تسجيل دفعة</button>'+(waLink(t,c)?'<a class="btn" target="_blank" rel="noopener" href="'+waLink(t,c)+'">تذكير واتساب</a>':'')+'<a class="btn" target="_blank" rel="noopener" href="'+calLink(t)+'">أضف للتقويم</a>'+(AS?'<button data-a="att" data-id="'+t.id+'">المرفقات'+(t.att&&t.att.length?' ('+t.att.length+')':'')+'</button>':'')+'<button data-a="renew" data-id="'+t.id+'">تجديد العقد</button><button data-a="vac" data-id="'+t.id+'">إخلاء</button><button data-a="addunit" data-id="'+t.id+'">إضافة وحدة</button><button data-a="stm" data-id="'+t.id+'">كشف حساب</button><button data-a="edit" data-id="'+t.id+'">تعديل</button><button class="danger" data-a="del" data-id="'+t.id+'">حذف</button></div>'+
-    (paid.length?'<div class="log">آخر الدفعات: '+'<br>'+paid.map(function(q){var p=q.p;return fmt(p.date)+' ('+money(p.amount)+(p.method?' '+esc(p.method):'')+(p.note?' - '+esc(p.note):'')+') <button data-a="rcp" data-id="'+t.id+'" data-i="'+q.i+'" style="min-height:32px;padding:2px 10px">إيصال</button>'}).join('<br>')+'</div>':'')+
+    (paid.length?'<div class="log">آخر الدفعات: '+'<br>'+paid.map(function(q){var p=q.p;return fmt(p.date)+' ('+money(p.amount)+(p.method?' '+esc(p.method):'')+(p.note?' - '+esc(p.note):'')+') <button data-a="rcp" data-id="'+t.id+'" data-i="'+q.i+'" style="min-height:32px;padding:2px 10px">إيصال</button> <button data-a="pedit" data-id="'+t.id+'" data-i="'+q.i+'" style="min-height:32px;padding:2px 10px">تعديل</button> <button class="danger" data-a="pdelx" data-id="'+t.id+'" data-i="'+q.i+'" style="min-height:32px;padding:2px 10px">حذف</button>'}).join('<br>')+'</div>':'')+
     '</div>';
   });
   list.innerHTML=cards.map(function(h,i){return groupHead(items,i)+h}).join('');
@@ -765,6 +791,8 @@ document.getElementById('list').addEventListener('click',function(e){
   var t=T.filter(function(x){return x.id===b.dataset.id})[0];if(!t)return;
   if(b.dataset.a==='pay'){openPay(t)}
   else if(b.dataset.a==='rcp'){openReceipt(t,+b.dataset.i)}
+  else if(b.dataset.a==='pedit'){openPayEdit(t,+b.dataset.i)}
+  else if(b.dataset.a==='pdelx'){delPay(t,+b.dataset.i)}
   else if(b.dataset.a==='stm'){openStatement(t)}
   else if(b.dataset.a==='addunit'){openUnit(t)}
   else if(b.dataset.a==='edit'){openForm(t)}
